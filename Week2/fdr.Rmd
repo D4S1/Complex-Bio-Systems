@@ -1,0 +1,241 @@
+#### Please Do Not Distribute 
+## Dependencies
+
+The following packages must be downloaded from CRAN or Bioconductor. Search these package names for more detailed installation instructions. When you have a problem with compiling any package, try to get the binary versions. R packages on CRAN can be installed with `install.packages()`. Bioconductor packages are installed by using `BiocManager::install()`:
+  
+```{r install_packages, eval=FALSE}
+# install.packages("package_name")
+install.packages(c("package_name1","package_name2"))
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(c("Biobase","limma","genefilter","edge","qvalue"))
+```
+
+```{r load_hidden, echo=FALSE, results="hide", warning=FALSE}
+suppressPackageStartupMessages({
+  library(devtools)
+  library(Biobase)
+  library(limma)
+  library(edge)
+  library(genefilter)
+  library(qvalue)
+  library(tidyverse)
+  library(data.table)
+})
+```
+
+```{r load}
+library(devtools)
+library(Biobase)
+library(limma)
+library(edge)
+library(genefilter)
+library(qvalue)
+library(tidyverse)
+library(data.table)
+```
+
+## Differential Expression Genes
+
+> A common goal in DNA microarray experiments is to detect genes that show differential expression across two or more biological conditions. In this scenario, the “features” are the genes, and they are tested against the null hypothesis that there is no differential gene expression. One of the goals of Hedenfalk et al. was to find genes that are differentially expressed between BRCA1- and BRCA2-mutation-positive tumors by obtaining several microarrays from each cell type. In their analysis they computed a modified F statistic and used it to assign a p value to each gene.
+
+```{r}
+# import data
+data(hedenfalk)
+stat <- hedenfalk$stat
+stat0 <- hedenfalk$stat0 #vector from null distribution
+pvalues <- empPvals(stat=stat, stat0=stat0)
+
+# calculate q-values and view results
+q.object <- qvalue(pvalues)
+summary(q.object)
+hist(q.object)
+plot(q.object)
+```
+
+## Gene expression from RNA-seq data
+
+This week, we use the RNA-seq data from 2 genetic strains of mouse. Originally, this data/experiment was used to assess the (dis)similarities between RNA-seq and microarrays using straightforward study designs (e.g., no disease or environmental factors). See:
+
+[Evaluating gene expression in C57BL/6J and DBA/2J mouse striatum using RNA-Seq and microarrays.](http://www.ncbi.nlm.nih.gov/pubmed?term=21455293)
+
+>C57BL/6J (B6) and DBA/2J (D2) are two of the most commonly used inbred mouse strains in neuroscience research. However, the only currently available mouse genome is based entirely on the B6 strain sequence. Subsequently, oligonucleotide microarray probes are based solely on this B6 reference sequence, making their application for gene expression profiling comparisons across mouse strains dubious due to their allelic sequence differences, including single nucleotide polymorphisms (SNPs).
+> The emergence of next-generation sequencing (NGS) and the RNA-Seq application provides a clear alternative to oligonucleotide arrays for detecting differential gene expression without the problems inherent to hybridization-based technologies.
+> Using RNA-Seq, an average of 22 million short sequencing reads were generated per sample for 21 samples (10 B6 and 11 D2), and these reads were aligned to the mouse reference genome, allowing 16,183 Ensembl genes to be queried in striatum for both strains. To determine differential expression, 'digital mRNA counting' is applied based on reads that map to exons. The current study compares RNA-Seq (Illumina GA IIx) with two microarray platforms (Illumina MouseRef-8 v2.0 and Affymetrix MOE 430 2.0) to detect differential striatal gene expression between the B6 and D2 inbred mouse strains. We show that by using stringent data processing requirements differential expression as determined by RNA-Seq is concordant with both the Affymetrix and Illumina platforms in more instances than it is concordant with only a single platform, and that instances of discordance with respect to direction of fold change were rare. Finally, we show that additional information is gained from RNA-Seq compared to hybridization-based techniques as RNA-Seq detects more genes than either microarray platform. The majority of genes differentially expressed in RNA-Seq were only detected as present in RNA-Seq, which is important for studies with smaller effect sizes where the sensitivity of hybridization-based techniques could bias interpretation.
+
+## ReCount
+
+We will get the pre-processed data, thanks to the ReCount project. More datasets and explanations are available from [ReCount](http://bowtie-bio.sourceforge.net/recount/) and [ReCount2](https://jhubiostatistics.shinyapps.io/recount/). They have applied consistent processing steps such as genome mapping, alignment, and summarization. Instead of very large original data, we get the data in `ExpressionSet` that is specifically designed to work in R. 
+
+Once downloaded, look at the data. And save the downloaded `ExpressionSet` for the future use:
+
+```{r}
+con = url("http://bowtie-bio.sourceforge.net/recount/ExpressionSets/bottomly_eset.RData")
+load(file=con)
+close(con)
+ls()
+bottomly.eset
+
+class(bottomly.eset)
+save(bottomly.eset, file="bottomly.Rdata")
+```
+
+`ExpressionSet` is organized by using related matrices contained as follow:
+
+The phenotype data is about samples:
+
+```{r}
+pdata=pData(bottomly.eset)
+dim(pdata)
+head(pdata)
+```
+
+The gene expression data as we know:
+
+```{r}
+edata=as.matrix(exprs(bottomly.eset))
+dim(edata)
+edata[1:5,1:5]
+```
+
+In the feature data, each row is a gene (e.g., feature), that is annotated or explained:
+
+```{r}
+fdata = fData(bottomly.eset)
+dim(fdata)
+head(fdata)
+```
+
+As the feature data may contain limited information about genes, you should search and look at biological processes and molecular pathways using a variety of web servers. Search `GeneCard`, 
+`Genbank`, `GO term`. There are corresponding APIs for R, such that you can pull down annotations for a list of genes programmatically. Use them to population the feature data.
+
+## Log2 transformation
+
+Why do we apply log transformation on gene expression data?
+
+```{r}
+edata_log = log2(edata + 1)
+edata_log = edata_log[rowMeans(edata_log) > 10, ]
+```
+
+## Conduct t-tests
+
+Let's test if the means of gene expression are different according to two groups (i.e., two strains). There are many different way to compute this in R depending on data structures. The most basic one:
+
+```{r}
+tgene1 <- t.test(edata[1, pdata$strain == "C57BL/6J"],edata[1, pdata$strain == "DBA/2J"],
+       var.equal = TRUE)
+print(tgene1)
+```
+
+You can use this function in a `for` or `while` loops, as well as R-specific `apply` to apply row-by-row. 
+
+```{r}
+tout_apply <- apply(edata, 1, function(x) {
+        t.test(x[pdata$strain == "C57BL/6J"],x[pdata$strain == "DBA/2J"], var.equal = TRUE)$p.value
+      })
+```
+
+There are many useful functions that automate or speed up statistical tests in large data. The package `genefilter` provides: 
+
+```{r}
+tout = rowttests(x = edata, fac = as.factor(pdata$strain))
+# are these p-values really identical? 
+all(tout$p.value == tout_apply)
+
+# did i mis-calculate? check!
+plot(tout$p.value, tout_apply)
+sum(tout$p.value - tout_apply)
+```
+
+## Visualize statistics and p-values
+
+We transform what we have so far, `tout`, into a tidy format. This allow us to quickly visualize (e.g.,) as histograms:
+
+```{r}
+ttidy <- gather(tout)
+ggplot(ttidy) + geom_histogram(bins = 30,aes(x=value)) + facet_wrap(~ key, scales="free")
+```
+
+Please use these as a starting point to learn more about `ggplot2`. 
+
+### Adjusting p-values 
+
+There are several methods that output adjusted p-values according to multiple comparisons. Look at `? p.adjust`.
+One of the most popular and also the most conservative approaches is a Bonferroni correction:
+
+```{r}
+tout$p.adjust <- p.adjust(tout$p.value, method="bonferroni")
+ttidy <- gather(tout[,c("p.value","p.adjust")])
+ggplot(ttidy) + geom_histogram(bins = 30,aes(x=value)) + facet_wrap(~ key, scales="free")
+```
+
+The Bonferroni correction attempts to control the FWER which is very strigent. We may want to relax this criteria. 
+
+### Calculating q-value to control false discovery rates
+
+Download, install, an use the `qvalue` Bioconductor library. Also the original paper and the library vignette are helpful:
+
+>Statistical significance for genome-wide studies. https://www.pnas.org/content/100/16/9440.full
+
+>With the increase in genomewide experiments and the sequencing of multiple genomes, the analysis of large data sets has become com- monplace in biology. It is often the case that thousands of features in a genomewide data set are tested against some null hypothesis, where a number of features are expected to be significant. Here we propose an approach to measuring statistical significance in these genomewide studies based on the concept of the false discovery rate. This approach offers a sensible balance between the number of true and false positives that is automatically calibrated and easily inter- preted. In doing so, a measure of statistical significance called the q value is associated with each tested feature. The q value is similar to the well known p value, except it is a measure of significance in terms of the false discovery rate rather than the false positive rate. Our approach avoids a flood of false positive results, while offering a more liberal criterion than what has been used in genome scans for linkage
+
+Using `qvalue`, you can automatically estimate pi0 and q-values for each gene:
+
+```{r}
+q.obj <- qvalue(tout$p.value)
+plot(q.obj)
+
+# look at the estimate of m0 (proportion of null variables)
+q.obj$pi0
+```
+
+We organize the qvalues into our previous data frame. Then transform into a tidy format and visualize using `ggplot2`:
+
+```{r}
+tout$q.value <- q.obj$qvalues
+ttidy <- gather(tout[,c("p.value","q.value")])
+ggplot(ttidy) + geom_histogram(bins = 30,aes(x=value)) + facet_wrap(~ key, scales="free")
+```
+
+Let's order this data frame by p-values so we see the top 10 genes. Note their p-values and q-values:
+
+```{r}
+tout.order <- tout[order(tout$p.value),]
+tout.order[1:10,]
+```
+
+### Modeling the lanes and experiments using limma
+
+We would like to use the meta information (in pdata) to adjust for technical variations that are likely contaminating the expression data. Then, the R package limma makes the computation of P-values and statistics easy for us. Particularly, we get to acccess its moderated t-statistics and moderated F-statistics, in which residual variances are shrunken towards the mean. This empirical Bayes method is more powerful than univariate tests because it borrows information across the whole dataset.
+
+```{r}
+mod = model.matrix(~ pdata$strain + pdata$lane.number + pdata$experiment.number)
+fit_limma = lmFit(edata,mod)
+ebayes_limma = eBayes(fit_limma)
+limma_pvals = topTable(ebayes_limma,number=dim(edata)[1])$P.Value
+hist(limma_pvals,col=4)
+```
+
+Why shrinkage? 
+
+>They use an empirical Bayes method to squeeze the genewise-wise residual variances towards a common value (or towards a global trend) (Smyth, 2004; Phipson et al, 2016). The degrees of freedom for the individual variances are increased to reflect the extra information gained from the empirical Bayes moderation, resulting in increased statistical power to detect differential expression.
+>The empirical Bayes moderated t-statistics test each individual contrast equal to zero. For each gene (row), the moderated F-statistic tests whether all the contrasts are zero. The F-statistic is an overall test computed from the set of t-statistics for that probe. This is exactly analogous the relationship between t-tests and F-statistics in conventional anova, except that the residual mean squares have been moderated between genes.
+
+```{r}
+#  Ordinary t-statistic
+ordinary.t <- ebayes_limma$coef[,2] / ebayes_limma$stdev.unscaled[,2] / ebayes_limma$sigma
+plot(ordinary.t, ebayes_limma$coefficients[,2],pch=20); abline(0,1,col="red")
+```
+
+We computed p-values, adjusted p-values (by the Bonferroni correction), and q-values. Put them altogether and visualize them at once. 
+
+```{r}
+limma_out <- data.table(pvalue = ebayes_limma$p.value[,2], coeff = ebayes_limma$coefficients[,2],
+                        p.bonferroni = p.adjust(ebayes_limma$p.value[,2], method="bonferroni"),
+                        qvalue = qvalue(ebayes_limma$p.value[,2])$qvalues)
+limma_tidy <- gather(limma_out)
+ggplot(limma_tidy) + geom_histogram(bins = 30,aes(x=value)) + facet_wrap(~ key, scales="free")
+```
+
