@@ -93,7 +93,7 @@ dev.off()
 > *Homework Problem 1:*
 > Make one heatmap of the aforementioned Bottomly data with the following options: a) both rows and columns are clustered, b) show a dendrogram only on the columns., and c) scale in the column direction. Send only one heatmap. If you are unsure, check the help document on this function by typing ?heatmap.2
 
-```{r}
+```{r results='hide'}
 pdf("figures/Dabrowska_problem1.pdf",height=10,width=10)
 heatmap.2(edata,
           main = "Bottomly et al. Clustered", # heat map title
@@ -107,9 +107,17 @@ heatmap.2(edata,
           
 dev.off()
 ```
-
-
-
+```{r}
+heatmap.2(edata,
+          main = "Bottomly et al. Clustered", # heat map title
+          notecol="black",      # change font color of cell labels to black
+          density.info="none",  # turns off density plot inside color legend
+          trace="none",         # turns off trace lines inside the heat map
+          margins =c(8,8),     # widens margins around plot
+          col=my_palette,       # use on color palette defined earlier
+          scale = "column",
+          dendrogram = "column")
+```
 
 ## Singular value decomposition (SVD)
 
@@ -158,9 +166,8 @@ ggplot(PC) + geom_point(aes(x=V1, y=V2, col=as.factor(experiment.number)))
 > As shown in the plot above, the projection on the top 2 PCs doesn't show the grouping by the strains. But we have many PCs to explore. Explore different combinations of PCs in scatter plots while coloring the data points by the genetic strains. Find a combination of PCs that separate the strains well. Send only one scatterplot.
 
 ```{r}
-pdf("figures/Dabrowska_problem2.pdf",height=5,width=10)
 PC <- data.table(svd.out$v,pData(bottomly.eset))
-ggplot(PC) +
+problem2 <- ggplot(PC) +
   geom_point(aes(x=V2, y=V3, col=as.factor(strain))) +
   labs(
     title = "PC2 vs. PC3: Genetic Strain Separation",
@@ -168,10 +175,15 @@ ggplot(PC) +
     y = "PC 3",
     color = "Genetic Strain"
   ) +
-  theme_minimal() 
+  theme_minimal()
+
+problem2
+```
+```{r results='hide'}
+pdf("figures/Dabrowska_problem2.pdf",height=5,width=10)
+problem2
 dev.off()
 ```
-
 ## Boxplots and violin plots
 
 Violin plots extend boxplots by showing the density estimates. However, both violin plots and boxplots would be better served when the original values are overlayed (the last plot below).
@@ -192,8 +204,14 @@ As we had done with right singular vectors, we can apply the similar exploration
 > Make a scatter plot of the top 2 left singular vectors.
 
 ```{r}
+problem3 <- plot(svd.out$u[,1], svd.out$u[,2], pch=4, xlab="Left singular vector 1", ylab="Left singular vector 2", main="Top 2 Left Singular Vectors")
+
+problem3
+```
+
+```{r results='hide'}
 pdf("figures/Dabrowska_problem3.pdf",height=5,width=10)
-plot(svd.out$u[,1], svd.out$u[,2], pch=4, xlab="Left singular vector 1", ylab="Left singular vector 2", main="Top 2 Left Singular Vectors")
+problem3
 dev.off()
 ```
 
@@ -201,13 +219,11 @@ dev.off()
 > Make one figure that contains violin plots of the top 5 left singular vectors (loadings). Hint/To-do: Make sure turn the top 5 left singular vectors into a data.table (or a data.frame) and ggplot2 to plot them altogether. Do not send 5 figures!
 
 ```{r}
-pdf("figures/Dabrowska_problem4.pdf",height=5,width=10)
-
 data <- data.frame(svd.out$u[, 1:5])
 colnames(data) <- c("U1", "U2", "U3", "U4", "U5")
 data <- data %>% gather(key = Vector, value = Value, U1:U5)
 
-ggplot(data, aes(x = Vector, y = Value)) +
+problem4 <- ggplot(data, aes(x = Vector, y = Value)) +
   geom_violin(trim = FALSE, alpha = 0.7) +
   theme_minimal() +
   labs(title = "Top 5 left singular vector density",
@@ -215,8 +231,15 @@ ggplot(data, aes(x = Vector, y = Value)) +
        y = "Value") +
   theme(legend.position = "none")
 
+problem4
+```
+
+```{r results='hide'}
+pdf("figures/Dabrowska_problem4.pdf",height=5,width=10)
+problem4
 dev.off()
 ```
+
 ## Role of Normalization 
 
 PCA has a long history in multivariate analysis. Combined with that of eigen decomposition, singular value decomposition, and related methods, there are confusing terminologies. If you are to use the PCA functions in R, you may get different results.
@@ -295,15 +318,20 @@ tsne_data <- data.frame(
 ```
 
 ```{r}
-pdf("figures/Dabrowska_problem5.pdf",height=5,width=10)
-
-ggplot(tsne_data) +
+problem5 <- ggplot(tsne_data) +
   geom_point(aes(x=V1, y=V2, color = Cluster)) +
   theme_minimal() +
   labs(title = "t-SNE Projection of Genes with K-means Clusters",
        x = "t-SNE 1",
        y = "t-SNE 2",
        color = "Cluster")
+
+problem5
+```
+
+```{r results='hide'}
+pdf("figures/Dabrowska_problem5.pdf",height=5,width=10)
+problem5
 dev.off()
 ```
 
