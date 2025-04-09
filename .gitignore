@@ -1,6 +1,12 @@
 # Created by https://www.toptal.com/developers/gitignore/api/r,python,git
 # Edit at https://www.toptal.com/developers/gitignore?templates=r,python,git
 
+# Data
+filtered_gene_bc_matrices
+Zheng
+hm_so.rds
+hm_so2.rds 
+
 ### Git ###
 # Created by git for backups. To disable backups in Git:
 # $ git config --global mergetool.keepBackup false
@@ -211,6 +217,7 @@ pyrightconfig.json
 
 # RStudio files
 .Rproj.user/
+.Rproj
 
 # produced vignettes
 vignettes/*.html
