@@ -1,0 +1,235 @@
+# Doublets and multiplets
+
+Despite the transforming potential of massively parallel single cell RNA seq technologies, there are occasional doublets and multiplets which needs to be detected and removed. When working with scRNA-seq data, we expect that only a single cell entered the droplet. The aggregation of multiple cells into single droplets occurs during the automated cell capture step which (mostly) we can not guarantee how that capture process will work out for each droplet. Having multiple cells will confound the analysis, leading to false discoveries of wrong, rare, intermediate, and unexpected cell types/states. Associating with diseases and other complex prototypes would arise to false molecular signatures. 
+
+
+# 10X Doublet Detection Data
+
+In Zheng G.X. et al. (2017), a tailored experiment was conducted to get the overall picture of doublets. In particular, two very different cell lines were mixed in (at different proportions) and sequenced together. When analyzing this gene expression, it is easier to distinguish doublets since two reference genomes are very different. We will deep dive into this data and analysis.
+
+Note that later in this exercises and in the general practice, special algorithms are typically used to detect doublets. We will look at two such methods (DoubletFinder and jackstraw). 
+
+Download the original data on the cellline mixture from 10X Genomics
+https://support.10xgenomics.com/single-cell-gene-expression/datasets
+Click "Single Cell 3' Paper: Zheng et al. 2017 (v1 Chemistry)" and then "50%:50% Jurkat:293T Cell Mixture". 
+
+We followed the original analysis given in Zheng G.X. et al. (2017) – particularly, quality control and filtering, dimension reduction, and K-means clustering.
+
+```{r load, echo=FALSE, results="hide", warning=FALSE}
+library(Matrix)
+library(ggplot2)
+library(Rtsne)
+library(dplyr)
+library(plyr)
+library(qvalue)
+library(data.table)
+library(pheatmap)
+library(jackstraw)
+require(gridExtra)
+library(cowplot) # combining ggplots
+library(mutoss) # more pi0 estimation methods
+library(DoubletFinder)
+library(Seurat)
+library(jaccard)
+```
+
+# Seurat normalization
+
+Apply typical steps in normalization and dimension reduction. As per the original study, we select 2000 features using the VST selection method. The top 10 PCs are extracted, followed by another application of UMAP. 
+
+```{r}
+mix.data <- Read10X(data.dir = "data/filtered_matrices_mex/hg19")
+mix <- CreateSeuratObject(counts = mix.data, min.cells = 3, min.features = 200,
+                           project = "10X-mixture")
+mix <- NormalizeData(mix)
+mix <- ScaleData(mix)
+mix <- FindVariableFeatures(mix, selection.method = "vst", nfeatures = 2000)
+mix <- RunPCA(mix, npcs = 10)
+mix <- RunUMAP(mix, dims = 1:10)
+
+mix_pca <- Embeddings(object = mix, reduction = "pca")
+```
+
+Note that the normalization steps can have substantial impact for downstream analysis. You need to experiment with these preprocessing steps to better understand. The key takeaway message is that for reliable and robust results, you likely want the small changes in the earlier QC stages gives still same conclusion.
+
+Try different values:
+
+```{r, eval=FALSE}
+mix.data <- Read10X(data.dir = "data/filtered_matrices_mex/hg19")
+mix <- CreateSeuratObject(counts = mix.data, min.cells = 5, min.features = 500,
+                           project = "10X-mixture")
+mix <- NormalizeData(mix)
+mix <- ScaleData(mix)
+mix <- FindVariableFeatures(mix, selection.method = "vst", nfeatures = 5000)
+mix <- RunPCA(mix, npcs = 20)
+mix <- RunUMAP(mix, dims = 1:20)
+
+mix_pca <- Embeddings(object = mix, reduction = "pca")
+```
+
+# Apply K-means clustering
+
+The top 10 PCs extracted in the aforementioned step are used to cluster the data, using the K-means.
+
+```{r}
+set.seed(0)
+k <- kmeans(mix_pca,2,iter.max=100, nstart = 100)
+# look at numbers of single cells clustered:
+summary(as.factor(k$cluster))
+```
+
+# Jackstraw for Clustering
+
+The jackstraw for clustering simulates a null single cell that do not belong to any cluster. Thus, when a null single cell is, subsequently, clustered into a group, we can be certain that it is an incorrect assignment. We use the null statistics from those null single cells to calculate p-values and posterior inclusion probabilities (PIPs). From 'Statistical significance of cluster membership for unsupervised evaluation of cell identities',
+
+> We introduce non-parametric methods to evaluate cell identities by testing cluster memberships in an unsupervised manner. We propose a posterior probability that a cell should be included in that clustering-based subpopulation. Posterior inclusion probabilities (PIPs) for cluster memberships can be used to select and visualize samples relevant to subpopulations. 
+
+Using the K-means object from above, we apply the jackstraw for clustering:
+
+```{r}
+js <- jackstraw_kmeans(mix_pca, kmeans.dat=k, s=100, B=100)
+pip = pip(js$p.F, group=k$cluster, pi0=pi0est(js$p.F, pi0.method="smoother", lambda=0.5)$pi0)
+```
+
+
+# DoubletFinder
+
+In a different manner, DoubletFinder simulates doublets by taking two random single cells and averaging their gene expression. From 'DoubletFinder: Doublet Detection in Single-Cell RNA Sequencing Data Using Artificial Nearest Neighbors',
+
+> DoubletFinder begins by simulating artificial doublets and incorporating these “cells” into existing scRNA-seq data that has been processed using the popular “Seurat” analysis pipeline. DoubletFinder then distinguishes real doublets from singlets by identifying real cells with high proportions of artificial neighbors in gene expression space. 
+
+First try to find a hyper-parameter, pK:
+
+```{r}
+sweep.res.list <- paramSweep(mix, PCs = 1:2, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn_mix <- find.pK(sweep.stats)
+pK.maxBC <- as.numeric(as.character(bcmvn_mix[which.max(bcmvn_mix[,'BCmetric']),]$pK))
+plot(bcmvn_mix$pK,bcmvn_mix$BCmetric, xlab="pK", ylab="BC metric") 
+pK.maxBC2 <- 0.07
+```
+
+Now, apply DoubletFinder with a specific nExp.
+```{r}
+# Remove previous pANN columns
+mix@meta.data <- mix@meta.data[, !grepl("pANN", colnames(mix@meta.data))]
+```
+
+```{r, eval=FALSE}
+nExp <- round(0.05*dim(mix)[2])
+df_out <- doubletFinder(mix, PCs = 1:2, pN = 0.25, pK = pK.maxBC, nExp = nExp)
+```
+
+
+DoubletFinder depends on hyper-parameters. You can try slightly different pN and pK to see their impact:
+
+```{r}
+nExp <- round(0.05*dim(mix)[2])
+df_out <- doubletFinder(mix, PCs = 1:2, pN = 0.4, pK = pK.maxBC*.5, nExp = nExp, reuse.pANN = FALSE)
+```
+
+# Applying DoubletFinder with a range of hyper-parameters
+
+DoubletFinder expects several hyper-parameters which must be decided by the user. These choices directly impact the number of doublets identified.
+
+```{r}
+set.seed(1234)
+fracExp <- seq(0.01, 0.05, by=0.02)
+DF <- matrix(0,nrow=dim(mix)[2],ncol=length(fracExp))
+DF2 <- matrix(0,nrow=dim(mix)[2],ncol=length(fracExp))
+JS <- matrix(0,nrow=dim(mix)[2],ncol=length(fracExp))
+for(i in 1:length(fracExp)){
+  nExp <- round(fracExp[i]*dim(mix)[2])
+  
+  df_out <- doubletFinder(mix, PCs = 1:2, pN = 0.25, pK = pK.maxBC, nExp = nExp)
+  DF[,i] <- df_out@meta.data[,5]
+
+  df2_out <- doubletFinder(mix, PCs = 1:2, pN = 0.25, pK = pK.maxBC2, nExp = nExp)
+  DF2[,i] <- df2_out@meta.data[,5]
+  
+  js_doublet <- rep("Samples", length(k$cluster))
+  js_doublet[which(rank(abs(js$F.obs)) <= nExp)] <- "Putative Nulls"
+  JS[,i] <- js_doublet
+}
+DF[DF == "Singlet"] <- "Samples"
+DF[DF == "Doublet"] <- "Putative Doublets"
+DF2[DF2 == "Singlet"] <- "Samples"
+DF2[DF2 == "Doublet"] <- "Putative Doublets"
+```
+
+# Comparing the jackstraw and DoubletFinder
+
+Computationally identifying doublets is intrinsically difficult problem. The jackstraw and DoubletFinder approach the same problem from different angles. The jackstraw creates a synthetic cell that does not belong to any cluster -- in this approach, we do not have to worry too much about hyper parameters which do not directly impact the downstream analysis. Instead DoubletFinder attempts to create synthetic doublets by combining expression from multiple cluster groups. 
+
+First, create a visualization data and some theme settings:
+
+```{r}
+dat.plot <- as.data.frame(mix_pca)
+dat.plot$k <- k$cluster
+dat.plot$Pvalue <- js$p.F
+dat.plot$JS1pct <- JS[,1]
+dat.plot$DFpK1_1pct <- DF[,1]
+dat.plot$DFpK2_1pct <- DF2[,1]
+dat.plot$JS3pct <- JS[,2]
+dat.plot$DFpK1_3pct <- DF[,2]
+dat.plot$DFpK2_3pct <- DF2[,2]
+dat.plot$JS5pct <- JS[,3]
+dat.plot$DFpK1_5pct <- DF[,3]
+dat.plot$DFpK2_5pct <- DF2[,3]
+
+My_Theme = theme_minimal() + theme(legend.position = "none",
+  axis.title = element_text(size = 8),  axis.text = element_text(size = 8),
+  plot.title = element_text(size= 12))
+My_Theme_Legend = theme_minimal() +theme(legend.position = "bottom",
+                                  axis.title = element_text(size = 8),  axis.text = element_text(size = 8),
+                                  plot.title = element_text(size= 12))
+```
+
+Finally, the plots:
+```{r}
+g.pca.DFpK1_1pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(DFpK1_1pct)), size=.3, alpha = 0.8) + 
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("red","darkgrey"))+
+  My_Theme + labs(title = '(a) DoubletFinder (pK=0.005) 1%', x="PC 1", y="PC 2")
+g.pca.DFpK2_1pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(DFpK2_1pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("red","darkgrey"))+
+  My_Theme + labs(title = '(b) DoubletFinder (pK=0.07) 1%', x="PC 1", y="PC 2")
+g.pca.JS1pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(JS1pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("purple","darkgrey"))+
+  My_Theme + labs(title = '(c) Jackstraw 1%', x="PC 1", y="PC 2")
+
+g.pca.DFpK1_3pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(DFpK1_3pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("red","darkgrey"))+
+  My_Theme + labs(title = '(d) DoubletFinder (pK=0.005) 3%', x="PC 1", y="PC 2")
+g.pca.DFpK2_3pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(DFpK2_3pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("red","darkgrey"))+
+  My_Theme + labs(title = '(e) DoubletFinder (pK=0.07) 3%', x="PC 1", y="PC 2")
+g.pca.JS3pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(JS3pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("purple","darkgrey"))+
+  My_Theme + labs(title = '(f) Jackstraw 3%', x="PC 1", y="PC 2")
+
+g.pca.DFpK1_5pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(DFpK1_5pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("red","darkgrey"))+
+  My_Theme_Legend + labs(title = '(g) DoubletFinder (pK=0.005) 5%', x="PC 1", y="PC 2")
+g.pca.DFpK2_5pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(DFpK2_5pct)), size=.3, alpha = 0.8) +
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("red","darkgrey"))+
+  My_Theme_Legend + labs(title = '(h) DoubletFinder (pK=0.005) 5%', x="PC 1", y="PC 2")
+g.pca.JS5pct <- ggplot(dat.plot,aes(PC_1,PC_2))+
+  geom_point(aes(col=as.factor(JS5pct)), size=.3, alpha = 0.8) + 
+  scale_colour_manual(guide = guide_legend(title = "",order = 1), values = c("purple","darkgrey"))+
+  My_Theme_Legend + labs(title = '(i) Jackstraw 5%', x="PC 1", y="PC 2")
+
+g.all <- plot_grid(g.pca.DFpK1_1pct, g.pca.DFpK2_1pct, g.pca.JS1pct,
+                   g.pca.DFpK1_3pct, g.pca.DFpK2_3pct, g.pca.JS3pct,
+                   g.pca.DFpK1_5pct, g.pca.DFpK2_5pct, g.pca.JS5pct, ncol = 3)
+save_plot(filename="figure/mixture_Jurkat293T_DF_pK.pdf", plot=g.all, base_height = 9, base_width = 10)
+
+print(g.all)
+```
